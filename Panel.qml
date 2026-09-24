@@ -19,6 +19,12 @@ Panel {
   property string activeProfile: ""
   property int profileIndex: 0
   property bool cursorActive: false
+  // Charge limit: read from sysfs, written by the bundled script (via pkexec).
+  readonly property string chargeLimitScript: String(Qt.resolvedUrl("bin/battery-charge-limit.sh")).replace(/^file:\/\//, "")
+  property bool limitOn: false
+  property int limitStart: 80
+  property int limitStop: 85
+  property bool limitDirty: false
   readonly property bool showPercentage: setting("showPercentage", false) === true
   // With the percentage shown the button paints a text block wider than an
   // icon, so the open-panel mark takes the painted width instead of the
@@ -138,6 +144,35 @@ Panel {
     if (!batteryProc.running) batteryProc.running = true
     if (!profilesProc.running) profilesProc.running = true
     if (!systemProc.running) systemProc.running = true
+    if (!limitProc.running) limitProc.running = true
+  }
+
+  function updateLimits(raw) {
+    var lines = String(raw || "").trim().split("\n")
+    if (lines.length < 3) return
+    limitOn = lines[0].indexOf("[Custom]") >= 0
+    if (limitDirty) return
+    limitStart = parseInt(lines[1])
+    limitStop = parseInt(lines[2])
+  }
+
+  function stepLimit(dStart, dStop) {
+    limitStart = Math.max(50, Math.min(95, limitStart + dStart))
+    limitStop = Math.max(limitStart + 5, Math.min(100, limitStop + dStop))
+    limitDirty = true
+  }
+
+  // Turning off writes immediately; turning on only reveals the steppers
+  // until Apply, so choosing both values costs one password prompt.
+  function toggleChargeLimit() {
+    if (limitOn) runChargeLimit(["--normal"])
+    else limitDirty = !limitDirty
+  }
+
+  function runChargeLimit(args) {
+    if (limitAction.running) return
+    limitAction.command = [chargeLimitScript].concat(args)
+    limitAction.running = true
   }
 
   function updateKeyValue(raw, targetName) {
@@ -192,6 +227,7 @@ Panel {
         return
       }
 
+      limitDirty = false
       refresh()
       var idx = profiles.indexOf(activeProfile)
       profileIndex = idx >= 0 ? idx : 0
@@ -226,6 +262,22 @@ Panel {
   Process {
     id: actionProc
     onExited: root.refresh()
+  }
+
+  Process {
+    id: limitProc
+    command: ["cat", "/sys/class/power_supply/BAT0/charge_types",
+      "/sys/class/power_supply/BAT0/charge_control_start_threshold",
+      "/sys/class/power_supply/BAT0/charge_control_end_threshold"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.updateLimits(text) }
+  }
+
+  Process {
+    id: limitAction
+    onExited: {
+      root.limitDirty = false
+      root.refresh()
+    }
   }
 
   Timer { interval: 5000; running: root.opened; repeat: true; onTriggered: root.refresh() }
@@ -503,8 +555,95 @@ Panel {
             }
           }
         }
+
+        // ---------- Charge limit ----------
+        PanelSeparator {
+          foreground: root.bar.foreground
+        }
+
+        Column {
+          width: parent.width
+          spacing: Style.space(10)
+
+          Item {
+            width: parent.width
+            implicitHeight: limitSwitch.implicitHeight
+
+            PanelSectionHeader {
+              text: "CHARGE LIMIT"
+              foreground: root.bar.foreground
+              fontFamily: root.bar.fontFamily
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+            }
+
+            ToggleSwitch {
+              id: limitSwitch
+              checked: root.limitOn || root.limitDirty
+              busy: limitAction.running
+              foreground: root.bar.foreground
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              onToggled: root.toggleChargeLimit()
+            }
+          }
+
+          LimitStepper {
+            visible: limitSwitch.checked
+            label: "Start charging at"
+            value: root.limitStart
+            onStep: function(delta) { root.stepLimit(delta, 0) }
+          }
+
+          LimitStepper {
+            visible: limitSwitch.checked
+            label: "Hold at"
+            value: root.limitStop
+            onStep: function(delta) { root.stepLimit(0, delta) }
+          }
+
+          StepButton {
+            visible: root.limitDirty && !limitAction.running
+            width: parent.width
+            text: "Apply"
+            onClicked: root.runChargeLimit(["--custom", String(root.limitStart), String(root.limitStop)])
+          }
+        }
       }
     }
+  }
+
+  component LimitStepper: Item {
+    id: stepper
+    property string label: ""
+    property int value: 0
+    signal step(int delta)
+
+    width: parent.width
+    implicitHeight: stepRow.implicitHeight
+
+    InfoLabel {
+      text: stepper.label
+      anchors.left: parent.left
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Row {
+      id: stepRow
+      anchors.right: parent.right
+      spacing: Style.space(10)
+
+      StepButton { text: "−"; onClicked: stepper.step(-5) }
+      InfoValue { text: stepper.value + "%"; anchors.verticalCenter: parent.verticalCenter }
+      StepButton { text: "+"; onClicked: stepper.step(5) }
+    }
+  }
+
+  component StepButton: Button {
+    fontSize: Style.font.bodySmall
+    foreground: root.bar.foreground
+    fontFamily: root.bar.fontFamily
+    bordered: true
   }
 
   component InfoPair: Row {
