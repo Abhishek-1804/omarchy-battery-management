@@ -6,10 +6,12 @@ set -euo pipefail
 B=/sys/class/power_supply/BAT0
 
 case "${1:-}" in
-  --custom) mode=Custom start=${2:-80} stop=${3:-85} ;; # default: hold near 85; firmware needs a 5% gap
+  --custom) mode=Custom start=${3:+$2} stop=${3:-${2:-85}} ;; # STOP alone: start = STOP - 5, the firmware's minimum gap
   --normal) mode=Fast   start=50 stop=90 ;; # original state, 2026-09-14
-  *) echo "usage: ${0##*/} --custom [START STOP]|--normal" >&2; exit 1 ;;
+  *) echo "usage: ${0##*/} --custom [STOP | START STOP]|--normal" >&2; exit 1 ;;
 esac
+
+[[ $stop =~ ^[0-9]+$ ]] && start=${start:-$(( stop - 5 ))}
 
 [[ $start =~ ^[0-9]+$ && $stop =~ ^[0-9]+$ ]] && (( start >= 50 && start <= 95 && stop <= 100 && stop >= start + 5 )) \
   || { echo "invalid limits: start=$start stop=$stop" >&2; exit 1; }

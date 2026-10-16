@@ -22,7 +22,6 @@ Panel {
   // Charge limit: read from sysfs, written by the bundled script (via pkexec).
   readonly property string chargeLimitScript: String(Qt.resolvedUrl("bin/battery-charge-limit.sh")).replace(/^file:\/\//, "")
   property bool limitOn: false
-  property int limitStart: 80
   property int limitStop: 85
   property bool limitDirty: false
   readonly property bool showPercentage: setting("showPercentage", false) === true
@@ -152,18 +151,17 @@ Panel {
     if (lines.length < 3) return
     limitOn = lines[0].indexOf("[Custom]") >= 0
     if (limitDirty) return
-    limitStart = parseInt(lines[1])
     limitStop = parseInt(lines[2])
   }
 
-  function stepLimit(dStart, dStop) {
-    limitStart = Math.max(50, Math.min(95, limitStart + dStart))
-    limitStop = Math.max(limitStart + 5, Math.min(100, limitStop + dStop))
+  // Only the stop is chosen; the script starts charging 5% below it.
+  function stepLimit(delta) {
+    limitStop = Math.max(55, Math.min(100, limitStop + delta))
     limitDirty = true
   }
 
   // Turning off writes immediately; turning on only reveals the steppers
-  // until Apply, so choosing both values costs one password prompt.
+  // until Apply, so choosing a value costs one password prompt.
   function toggleChargeLimit() {
     if (limitOn) runChargeLimit(["--normal"])
     else limitDirty = !limitDirty
@@ -590,23 +588,16 @@ Panel {
 
           LimitStepper {
             visible: limitSwitch.checked
-            label: "Start charging at"
-            value: root.limitStart
-            onStep: function(delta) { root.stepLimit(delta, 0) }
-          }
-
-          LimitStepper {
-            visible: limitSwitch.checked
             label: "Hold at"
             value: root.limitStop
-            onStep: function(delta) { root.stepLimit(0, delta) }
+            onStep: function(delta) { root.stepLimit(delta) }
           }
 
           StepButton {
             visible: root.limitDirty && !limitAction.running
             width: parent.width
             text: "Apply"
-            onClicked: root.runChargeLimit(["--custom", String(root.limitStart), String(root.limitStop)])
+            onClicked: root.runChargeLimit(["--custom", String(root.limitStop)])
           }
         }
       }
